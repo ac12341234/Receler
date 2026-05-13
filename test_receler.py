@@ -9,6 +9,7 @@ from pathlib import Path
 from diffusers import LMSDiscreteScheduler, StableDiffusionPipeline
 from accelerate import PartialState
 from receler.erasers.diffusers_erasers import inject_eraser
+from receler.multi_eraser import MultiEraserWrapper, normalize_fusion_inputs
 
 
 def parse_specify(specify_classes):
@@ -17,12 +18,28 @@ def parse_specify(specify_classes):
     return {c: int(n) for c, n in clusters}
 
 
-def generate_images(model_name_or_path, prompts_path, save_folder,
-                    guidance_scale=7.5, image_size=512, ddim_steps=50,
-                    num_samples=5, use_cuda_generator=False, specify_classes=None, log_sep=10):
+def build_pipeline(model_name_or_path=None, eraser_paths=None, fusion_weights=None, fusion_config=None):
+    eraser_paths, fusion_weights = normalize_fusion_inputs(
+        eraser_paths=eraser_paths,
+        fusion_weights=fusion_weights,
+        fusion_config=fusion_config,
+    )
 
     # scheduler used in ESD and UCE
     scheduler = LMSDiscreteScheduler(beta_start=0.00085, beta_end=0.012, beta_schedule="scaled_linear", num_train_timesteps=1000)
+
+    if eraser_paths:
+        pipeline = StableDiffusionPipeline.from_pretrained(
+            'CompVis/stable-diffusion-v1-4',
+            scheduler=scheduler,
+            safety_checker=None,
+        )
+        wrapper = MultiEraserWrapper(eraser_paths, fusion_weights=fusion_weights)
+        wrapper.register(pipeline.unet)
+        return pipeline, wrapper
+
+    if not model_name_or_path:
+        raise ValueError('--model_name_or_path is required unless --eraser_paths or --fusion_config is used.')
 
     if not os.path.exists(model_name_or_path):
         # try loading the pretrained pipeline hosted on the Hub
@@ -36,6 +53,19 @@ def generate_images(model_name_or_path, prompts_path, save_folder,
             eraser_config = json.load(f)
         # inject erasers into pretrained SD
         inject_eraser(pipeline.unet, torch.load(eraser_ckpt_path, map_location='cpu'), **eraser_config)
+    return pipeline, None
+
+
+def generate_images(model_name_or_path, prompts_path, save_folder,
+                    guidance_scale=7.5, image_size=512, ddim_steps=50,
+                    num_samples=5, use_cuda_generator=False, specify_classes=None, log_sep=10,
+                    eraser_paths=None, fusion_weights=None, fusion_config=None):
+    pipeline, wrapper = build_pipeline(
+        model_name_or_path=model_name_or_path,
+        eraser_paths=eraser_paths,
+        fusion_weights=fusion_weights,
+        fusion_config=fusion_config,
+    )
 
     # prepare data
     df = pd.read_csv(prompts_path)
@@ -50,6 +80,8 @@ def generate_images(model_name_or_path, prompts_path, save_folder,
     distributed_state = PartialState()
     device = distributed_state.device
     pipeline = pipeline.to(device)
+    if wrapper is not None:
+        wrapper.to(device)
     
     # disable tqdm progress bar
     pipeline.set_progress_bar_config(disable=True)
@@ -100,7 +132,10 @@ if __name__=='__main__':
         description='Generate Images using Diffusers Code'
     )
 
-    parser.add_argument('--model_name_or_path', help='model name or path to be loaded', type=str, required=True)
+    parser.add_argument('--model_name_or_path', help='model name or path to be loaded', type=str, default=None)
+    parser.add_argument('--eraser_paths', help='comma-separated Receler eraser folders for multi-Eraser fusion', type=str, default=None)
+    parser.add_argument('--fusion_weight', help='comma-separated fusion weights for --eraser_paths', type=str, default=None)
+    parser.add_argument('--fusion_config', help='path to fusion_config.json for multi-Eraser fusion', type=str, default=None)
     parser.add_argument('--prompts_path', help='path to the CSV file with prompts', type=str, required=True)
 
     # Others parameters
@@ -117,7 +152,29 @@ if __name__=='__main__':
 
     args = parser.parse_args()
 
-    folder_name = f"{Path(args.prompts_path).stem}-{Path(args.model_name_or_path).stem}"
+    try:
+        eraser_paths, _ = normalize_fusion_inputs(
+            eraser_paths=args.eraser_paths,
+            fusion_weights=args.fusion_weight,
+            fusion_config=args.fusion_config,
+        )
+    except ValueError as error:
+        parser.error(str(error))
+
+    if eraser_paths:
+        if args.model_name_or_path:
+            parser.error('--model_name_or_path cannot be combined with --eraser_paths or --fusion_config.')
+        if args.fusion_config:
+            model_stem = f'fusion_{Path(args.fusion_config).stem}'
+        else:
+            eraser_names = '_'.join(Path(path.rstrip('/\\')).stem for path in eraser_paths)
+            model_stem = f'fusion_{eraser_names}'
+    else:
+        if not args.model_name_or_path:
+            parser.error('--model_name_or_path is required unless --eraser_paths or --fusion_config is used.')
+        model_stem = Path(args.model_name_or_path.rstrip('/\\')).stem
+
+    folder_name = f"{Path(args.prompts_path).stem}-{model_stem}"
     save_folder = os.path.join(args.save_root, folder_name)
     os.makedirs(save_folder, exist_ok=True)
     print(f'\nGenerated images will be saved in {save_folder}\n')
@@ -133,4 +190,7 @@ if __name__=='__main__':
         use_cuda_generator=args.use_cuda_generator,
         specify_classes=args.specify_classes,
         log_sep=args.log_sep,
+        eraser_paths=args.eraser_paths,
+        fusion_weights=args.fusion_weight,
+        fusion_config=args.fusion_config,
     )
