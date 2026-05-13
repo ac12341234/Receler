@@ -14,11 +14,13 @@ from receler.multi_eraser import MultiEraserWrapper, normalize_fusion_inputs
 
 def parse_specify(specify_classes):
     # Format: "cls_1:num_1,cls_2:num2,..."
-    clusters = [cn.split(':') for cn in specify_classes.split(',')]
+    clusters = [cn.split(":") for cn in specify_classes.split(",")]
     return {c: int(n) for c, n in clusters}
 
 
-def build_pipeline(model_name_or_path=None, eraser_paths=None, fusion_weights=None, fusion_config=None):
+def build_pipeline(
+    model_name_or_path=None, eraser_paths=None, fusion_weights=None, fusion_config=None
+):
     eraser_paths, fusion_weights = normalize_fusion_inputs(
         eraser_paths=eraser_paths,
         fusion_weights=fusion_weights,
@@ -26,11 +28,16 @@ def build_pipeline(model_name_or_path=None, eraser_paths=None, fusion_weights=No
     )
 
     # scheduler used in ESD and UCE
-    scheduler = LMSDiscreteScheduler(beta_start=0.00085, beta_end=0.012, beta_schedule="scaled_linear", num_train_timesteps=1000)
+    scheduler = LMSDiscreteScheduler(
+        beta_start=0.00085,
+        beta_end=0.012,
+        beta_schedule="scaled_linear",
+        num_train_timesteps=1000,
+    )
 
     if eraser_paths:
         pipeline = StableDiffusionPipeline.from_pretrained(
-            'CompVis/stable-diffusion-v1-4',
+            "CompVis/stable-diffusion-v1-4",
             scheduler=scheduler,
             safety_checker=None,
         )
@@ -39,27 +46,48 @@ def build_pipeline(model_name_or_path=None, eraser_paths=None, fusion_weights=No
         return pipeline, wrapper
 
     if not model_name_or_path:
-        raise ValueError('--model_name_or_path is required unless --eraser_paths or --fusion_config is used.')
+        raise ValueError(
+            "--model_name_or_path is required unless --eraser_paths or --fusion_config is used."
+        )
 
     if not os.path.exists(model_name_or_path):
         # try loading the pretrained pipeline hosted on the Hub
-        pipeline = StableDiffusionPipeline.from_pretrained(model_name_or_path, scheduler=scheduler, safety_checker=None)
+        pipeline = StableDiffusionPipeline.from_pretrained(
+            model_name_or_path, scheduler=scheduler, safety_checker=None
+        )
     else:
         # load receler checkpoint
-        pipeline = StableDiffusionPipeline.from_pretrained('CompVis/stable-diffusion-v1-4', scheduler=scheduler, safety_checker=None)
-        eraser_ckpt_path = os.path.join(model_name_or_path, f'eraser_weights.pt')
-        eraser_config_path = os.path.join(model_name_or_path, f'eraser_config.json')
+        pipeline = StableDiffusionPipeline.from_pretrained(
+            "CompVis/stable-diffusion-v1-4", scheduler=scheduler, safety_checker=None
+        )
+        eraser_ckpt_path = os.path.join(model_name_or_path, f"eraser_weights.pt")
+        eraser_config_path = os.path.join(model_name_or_path, f"eraser_config.json")
         with open(eraser_config_path) as f:
             eraser_config = json.load(f)
         # inject erasers into pretrained SD
-        inject_eraser(pipeline.unet, torch.load(eraser_ckpt_path, map_location='cpu'), **eraser_config)
+        inject_eraser(
+            pipeline.unet,
+            torch.load(eraser_ckpt_path, map_location="cpu"),
+            **eraser_config,
+        )
     return pipeline, None
 
 
-def generate_images(model_name_or_path, prompts_path, save_folder,
-                    guidance_scale=7.5, image_size=512, ddim_steps=50,
-                    num_samples=5, use_cuda_generator=False, specify_classes=None, log_sep=10,
-                    eraser_paths=None, fusion_weights=None, fusion_config=None):
+def generate_images(
+    model_name_or_path,
+    prompts_path,
+    save_folder,
+    guidance_scale=7.5,
+    image_size=512,
+    ddim_steps=50,
+    num_samples=5,
+    use_cuda_generator=False,
+    specify_classes=None,
+    log_sep=10,
+    eraser_paths=None,
+    fusion_weights=None,
+    fusion_config=None,
+):
     pipeline, wrapper = build_pipeline(
         model_name_or_path=model_name_or_path,
         eraser_paths=eraser_paths,
@@ -82,15 +110,17 @@ def generate_images(model_name_or_path, prompts_path, save_folder,
     pipeline = pipeline.to(device)
     if wrapper is not None:
         wrapper.to(device)
-    
+
     # disable tqdm progress bar
     pipeline.set_progress_bar_config(disable=True)
 
-    if use_cuda_generator and 'cuda' in str(device):
+    if use_cuda_generator and "cuda" in str(device):
         get_generator = lambda seed: torch.Generator(device=device).manual_seed(seed)
     else:
         if use_cuda_generator:
-            warnings.warn('Warning: use_cuda_generator will be ignored because CUDA is not used.')
+            warnings.warn(
+                "Warning: use_cuda_generator will be ignored because CUDA is not used."
+            )
         get_generator = lambda seed: torch.manual_seed(seed)
 
     # generate and save
@@ -99,14 +129,22 @@ def generate_images(model_name_or_path, prompts_path, save_folder,
         for idx, row in enumerate(rows):
             # logging time on main process
             if idx % log_sep == 0 and distributed_state.is_main_process:
-                curr_time = datetime.datetime.now().isoformat(sep=" ", timespec="seconds")
+                curr_time = datetime.datetime.now().isoformat(
+                    sep=" ", timespec="seconds"
+                )
                 elapsed_t = datetime.datetime.now() - start_t
                 elapsed_r = idx / len(rows)
-                remaining = datetime.timedelta(seconds=elapsed_t.seconds*(1/elapsed_r-1)) if elapsed_r != 0 else None
-                print(f'{curr_time}, Progress: [{idx}/{len(rows)}], Remaining: {remaining}')
+                remaining = (
+                    datetime.timedelta(seconds=elapsed_t.seconds * (1 / elapsed_r - 1))
+                    if elapsed_r != 0
+                    else None
+                )
+                print(
+                    f"{curr_time}, Progress: [{idx}/{len(rows)}], Remaining: {remaining}"
+                )
 
-            if 'class' in row and getattr(row, 'class') in class2num:
-                gen_num_samples = class2num[getattr(row, 'class')]
+            if "class" in row and getattr(row, "class") in class2num:
+                gen_num_samples = class2num[getattr(row, "class")]
             else:
                 gen_num_samples = num_samples
             prompts = [str(row.prompt)] * gen_num_samples
@@ -126,29 +164,77 @@ def generate_images(model_name_or_path, prompts_path, save_folder,
                 im.save(f"{save_folder}/{case_number}_{num}.png")
 
 
-if __name__=='__main__':
+if __name__ == "__main__":
     parser = argparse.ArgumentParser(
-        prog='GenerateImages',
-        description='Generate Images using Diffusers Code'
+        prog="GenerateImages", description="Generate Images using Diffusers Code"
     )
 
-    parser.add_argument('--model_name_or_path', help='model name or path to be loaded', type=str, default=None)
-    parser.add_argument('--eraser_paths', help='comma-separated Receler eraser folders for multi-Eraser fusion', type=str, default=None)
-    parser.add_argument('--fusion_weight', help='comma-separated fusion weights for --eraser_paths', type=str, default=None)
-    parser.add_argument('--fusion_config', help='path to fusion_config.json for multi-Eraser fusion', type=str, default=None)
-    parser.add_argument('--prompts_path', help='path to the CSV file with prompts', type=str, required=True)
+    parser.add_argument(
+        "--model_name_or_path",
+        help="model name or path to be loaded",
+        type=str,
+        default=None,
+    )
+    parser.add_argument(
+        "--eraser_paths",
+        help="comma-separated Receler eraser folders for multi-Eraser fusion",
+        type=str,
+        default=None,
+    )
+    parser.add_argument(
+        "--fusion_weight",
+        help="comma-separated fusion weights for --eraser_paths",
+        type=str,
+        default=None,
+    )
+    parser.add_argument(
+        "--fusion_config",
+        help="path to fusion_config.json for multi-Eraser fusion",
+        type=str,
+        default=None,
+    )
+    parser.add_argument(
+        "--prompts_path",
+        help="path to the CSV file with prompts",
+        type=str,
+        required=True,
+    )
 
     # Others parameters
-    parser.add_argument('--save_root', help='evaluation root to save images', type=str, default='test_results/')
-    parser.add_argument('--log_sep', help='log every log_sep batches', type=int, default=10)
+    parser.add_argument(
+        "--save_root",
+        help="evaluation root to save images",
+        type=str,
+        default="test_results/",
+    )
+    parser.add_argument(
+        "--log_sep", help="log every log_sep batches", type=int, default=10
+    )
     # Sampling parameters
-    parser.add_argument('--guidance_scale', help='guidance scale to run eval', type=float, default=7.5)
-    parser.add_argument('--image_size', help='image size of inference', type=int, default=512)
-    parser.add_argument('--num_samples', help='number of samples per prompt', type=int, default=1)
-    parser.add_argument('--ddim_steps', help='DDIM steps of inference', type=int, default=50)
-    parser.add_argument('--use_cuda_generator', help='whether to initialize random generate on CUDA', action="store_true")
+    parser.add_argument(
+        "--guidance_scale", help="guidance scale to run eval", type=float, default=7.5
+    )
+    parser.add_argument(
+        "--image_size", help="image size of inference", type=int, default=512
+    )
+    parser.add_argument(
+        "--num_samples", help="number of samples per prompt", type=int, default=1
+    )
+    parser.add_argument(
+        "--ddim_steps", help="DDIM steps of inference", type=int, default=50
+    )
+    parser.add_argument(
+        "--use_cuda_generator",
+        help="whether to initialize random generate on CUDA",
+        action="store_true",
+    )
     # Generate different number of images for specific classes. If not specified, default to num_samples.
-    parser.add_argument('--specify_classes', help='str in the format of "cls_1:num_1,cls_2:num_2,cls_3:num_3"', type=str, default=None)
+    parser.add_argument(
+        "--specify_classes",
+        help='str in the format of "cls_1:num_1,cls_2:num_2,cls_3:num_3"',
+        type=str,
+        default=None,
+    )
 
     args = parser.parse_args()
 
@@ -163,21 +249,27 @@ if __name__=='__main__':
 
     if eraser_paths:
         if args.model_name_or_path:
-            parser.error('--model_name_or_path cannot be combined with --eraser_paths or --fusion_config.')
+            parser.error(
+                "--model_name_or_path cannot be combined with --eraser_paths or --fusion_config."
+            )
         if args.fusion_config:
-            model_stem = f'fusion_{Path(args.fusion_config).stem}'
+            model_stem = f"fusion_{Path(args.fusion_config).stem}"
         else:
-            eraser_names = '_'.join(Path(path.rstrip('/\\')).stem for path in eraser_paths)
-            model_stem = f'fusion_{eraser_names}'
+            eraser_names = "_".join(
+                Path(path.rstrip("/\\")).stem for path in eraser_paths
+            )
+            model_stem = f"fusion_{eraser_names}"
     else:
         if not args.model_name_or_path:
-            parser.error('--model_name_or_path is required unless --eraser_paths or --fusion_config is used.')
-        model_stem = Path(args.model_name_or_path.rstrip('/\\')).stem
+            parser.error(
+                "--model_name_or_path is required unless --eraser_paths or --fusion_config is used."
+            )
+        model_stem = Path(args.model_name_or_path.rstrip("/\\")).stem
 
     folder_name = f"{Path(args.prompts_path).stem}-{model_stem}"
     save_folder = os.path.join(args.save_root, folder_name)
     os.makedirs(save_folder, exist_ok=True)
-    print(f'\nGenerated images will be saved in {save_folder}\n')
+    print(f"\nGenerated images will be saved in {save_folder}\n")
 
     generate_images(
         args.model_name_or_path,
