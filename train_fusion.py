@@ -87,7 +87,7 @@ def train_fusion(
     elif ',' in concept:
         concepts = [item.strip() for item in concept.split(',') if item.strip()]
     else:
-        concepts = [concept]
+        concepts = [concept.strip()]
     if not concepts:
         raise ValueError(
             '--concept was not provided and concepts could not be inferred from eraser folder names. '

@@ -139,39 +139,43 @@ class MultiEraserWrapper(nn.Module):
         if self.handles:
             raise RuntimeError('MultiEraserWrapper hooks are already registered.')
 
-        matched_layers = set()
-        for block_name, module in unet.named_modules():
-            if not isinstance(module, BasicTransformerBlock):
-                continue
-            layer_name = diffuser_prefix_name(block_name)
-            active_erasers = [
-                eraser_idx for eraser_idx, checkpoint in enumerate(self.eraser_checkpoints)
-                if layer_name in checkpoint
-            ]
-            if not active_erasers:
-                continue
+        try:
+            matched_layers = set()
+            for block_name, module in unet.named_modules():
+                if not isinstance(module, BasicTransformerBlock):
+                    continue
+                layer_name = diffuser_prefix_name(block_name)
+                active_erasers = [
+                    eraser_idx for eraser_idx, checkpoint in enumerate(self.eraser_checkpoints)
+                    if layer_name in checkpoint
+                ]
+                if not active_erasers:
+                    continue
 
-            matched_layers.add(layer_name)
-            self.layer_to_adapter_keys[layer_name] = []
-            self.layer_to_eraser_indices[layer_name] = active_erasers
-            for eraser_idx in active_erasers:
-                key = self._adapter_key(eraser_idx, layer_name)
-                if key not in self.adapters:
-                    self.adapters[key] = self._build_adapter(module.attn2, eraser_idx, layer_name)
-                self.layer_to_adapter_keys[layer_name].append(key)
+                matched_layers.add(layer_name)
+                self.layer_to_adapter_keys[layer_name] = []
+                self.layer_to_eraser_indices[layer_name] = active_erasers
+                for eraser_idx in active_erasers:
+                    key = self._adapter_key(eraser_idx, layer_name)
+                    if key not in self.adapters:
+                        self.adapters[key] = self._build_adapter(module.attn2, eraser_idx, layer_name)
+                    self.layer_to_adapter_keys[layer_name].append(key)
 
-            print(f'Load multi eraser hook at: {block_name} ({len(active_erasers)} active erasers)')
-            self.handles.append(module.attn2.register_forward_hook(self._make_hook(layer_name)))
+                print(f'Load multi eraser hook at: {block_name} ({len(active_erasers)} active erasers)')
+                self.handles.append(module.attn2.register_forward_hook(self._make_hook(layer_name)))
 
-        missing_layers = sorted(self.layer_names - matched_layers)
-        if missing_layers:
-            raise ValueError(
-                'Some eraser checkpoint layers did not match the UNet: '
-                + ', '.join(missing_layers[:10])
-                + (' ...' if len(missing_layers) > 10 else '')
-            )
-        if not self.handles:
-            raise ValueError('No matching cross-attention layers found for the provided erasers.')
+            missing_layers = sorted(self.layer_names - matched_layers)
+            if missing_layers:
+                raise ValueError(
+                    'Some eraser checkpoint layers did not match the UNet: '
+                    + ', '.join(missing_layers[:10])
+                    + (' ...' if len(missing_layers) > 10 else '')
+                )
+            if not self.handles:
+                raise ValueError('No matching cross-attention layers found for the provided erasers.')
+        except Exception:
+            self.remove()
+            raise
         return self
 
     def remove(self):
