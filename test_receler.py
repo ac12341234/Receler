@@ -19,12 +19,17 @@ def parse_specify(specify_classes):
 
 
 def build_pipeline(
-    model_name_or_path=None, eraser_paths=None, fusion_weights=None, fusion_config=None
+    model_name_or_path=None,
+    eraser_paths=None,
+    fusion_weights=None,
+    fusion_config=None,
+    fusion_scale=None,
 ):
-    eraser_paths, fusion_weights = normalize_fusion_inputs(
+    eraser_paths, fusion_weights, fusion_scale = normalize_fusion_inputs(
         eraser_paths=eraser_paths,
         fusion_weights=fusion_weights,
         fusion_config=fusion_config,
+        fusion_scale=fusion_scale,
     )
 
     # scheduler used in ESD and UCE
@@ -41,7 +46,11 @@ def build_pipeline(
             scheduler=scheduler,
             safety_checker=None,
         )
-        wrapper = MultiEraserWrapper(eraser_paths, fusion_weights=fusion_weights)
+        wrapper = MultiEraserWrapper(
+            eraser_paths,
+            fusion_weights=fusion_weights,
+            fusion_scale=fusion_scale,
+        )
         wrapper.register(pipeline.unet)
         return pipeline, wrapper
 
@@ -87,12 +96,14 @@ def generate_images(
     eraser_paths=None,
     fusion_weights=None,
     fusion_config=None,
+    fusion_scale=None,
 ):
     pipeline, wrapper = build_pipeline(
         model_name_or_path=model_name_or_path,
         eraser_paths=eraser_paths,
         fusion_weights=fusion_weights,
         fusion_config=fusion_config,
+        fusion_scale=fusion_scale,
     )
 
     # prepare data
@@ -194,6 +205,12 @@ if __name__ == "__main__":
         default=None,
     )
     parser.add_argument(
+        "--fusion_scale",
+        help="global scale applied to the fused Eraser residual",
+        type=float,
+        default=None,
+    )
+    parser.add_argument(
         "--prompts_path",
         help="path to the CSV file with prompts",
         type=str,
@@ -239,10 +256,11 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     try:
-        eraser_paths, _ = normalize_fusion_inputs(
+        eraser_paths, _, _ = normalize_fusion_inputs(
             eraser_paths=args.eraser_paths,
             fusion_weights=args.fusion_weight,
             fusion_config=args.fusion_config,
+            fusion_scale=args.fusion_scale,
         )
     except ValueError as error:
         parser.error(str(error))
@@ -285,4 +303,5 @@ if __name__ == "__main__":
         eraser_paths=args.eraser_paths,
         fusion_weights=args.fusion_weight,
         fusion_config=args.fusion_config,
+        fusion_scale=args.fusion_scale,
     )

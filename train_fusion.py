@@ -54,6 +54,7 @@ def train_fusion(
         iterations=500,
         lr=1e-2,
         negative_guidance=1.0,
+        fusion_scale=1.0,
         image_size=512,
         seed=None,
     ):
@@ -71,6 +72,7 @@ def train_fusion(
     wrapper = MultiEraserWrapper(
         eraser_paths,
         fusion_weights=fusion_weights,
+        fusion_scale=fusion_scale,
         trainable_weights=True,
         device=device,
     )
@@ -151,15 +153,17 @@ if __name__ == '__main__':
     parser.add_argument('--iterations', help='number of fusion training iterations', type=int, default=500)
     parser.add_argument('--lr', help='learning rate for fusion logits', type=float, default=1e-2)
     parser.add_argument('--negative_guidance', help='negative guidance used in Receler erase loss', type=float, default=1.0)
+    parser.add_argument('--fusion_scale', help='global scale applied to the fused Eraser residual', type=float, default=None)
     parser.add_argument('--image_size', help='image size used to infer latent resolution', type=int, default=512)
     parser.add_argument('--seed', help='optional random seed', type=int, default=None)
 
     args = parser.parse_args()
     try:
-        eraser_paths, fusion_weights = normalize_fusion_inputs(
+        eraser_paths, fusion_weights, fusion_scale = normalize_fusion_inputs(
             eraser_paths=args.eraser_paths,
             fusion_weights=args.fusion_weight,
             fusion_config=args.fusion_config,
+            fusion_scale=args.fusion_scale,
         )
     except ValueError as error:
         parser.error(str(error))
@@ -176,6 +180,7 @@ if __name__ == '__main__':
         iterations=args.iterations,
         lr=args.lr,
         negative_guidance=args.negative_guidance,
+        fusion_scale=fusion_scale,
         image_size=args.image_size,
         seed=args.seed,
     )

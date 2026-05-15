@@ -33,14 +33,17 @@ def load_fusion_config(config_path):
             raise ValueError(f'fusion config eraser #{idx} is missing "path"')
         eraser_paths.append(eraser['path'])
         weights.append(float(eraser.get('weight', 1.0)))
-    return eraser_paths, weights
+    fusion_scale = float(config.get('fusion_scale', 1.0))
+    return eraser_paths, weights, fusion_scale
 
 
-def normalize_fusion_inputs(eraser_paths=None, fusion_weights=None, fusion_config=None):
+def normalize_fusion_inputs(eraser_paths=None, fusion_weights=None, fusion_config=None, fusion_scale=None):
     if fusion_config and eraser_paths:
         raise ValueError('--fusion_config and --eraser_paths are mutually exclusive.')
     if fusion_config:
-        eraser_paths, fusion_weights = load_fusion_config(fusion_config)
+        eraser_paths, fusion_weights, config_fusion_scale = load_fusion_config(fusion_config)
+        if fusion_scale is None:
+            fusion_scale = config_fusion_scale
     elif eraser_paths:
         eraser_paths = parse_csv_list(eraser_paths, str)
         fusion_weights = parse_csv_list(fusion_weights, float) if fusion_weights else None
@@ -55,16 +58,32 @@ def normalize_fusion_inputs(eraser_paths=None, fusion_weights=None, fusion_confi
         raise ValueError(
             f'Expected {len(eraser_paths)} fusion weights, but got {len(fusion_weights)}.'
         )
-    return eraser_paths, fusion_weights
+    if fusion_scale is None:
+        fusion_scale = 1.0
+    fusion_scale = float(fusion_scale)
+    if fusion_scale < 0:
+        raise ValueError('fusion_scale must be non-negative.')
+    return eraser_paths, fusion_weights, fusion_scale
 
 
 class MultiEraserWrapper(nn.Module):
-    def __init__(self, eraser_paths, fusion_weights=None, trainable_weights=False, device=None, dtype=None):
+    def __init__(
+            self,
+            eraser_paths,
+            fusion_weights=None,
+            fusion_scale=1.0,
+            trainable_weights=False,
+            device=None,
+            dtype=None,
+        ):
         super().__init__()
         if not eraser_paths:
             raise ValueError('MultiEraserWrapper requires at least one eraser path.')
         self.eraser_paths = [str(path) for path in eraser_paths]
         self.fusion_weights = self._prepare_weights(fusion_weights, len(self.eraser_paths))
+        self.fusion_scale = float(fusion_scale)
+        if self.fusion_scale < 0:
+            raise ValueError('fusion_scale must be non-negative.')
         self.trainable_weights = trainable_weights
         self.device = device
         self.dtype = dtype
@@ -215,7 +234,7 @@ class MultiEraserWrapper(nn.Module):
                 adapter = self.adapters[adapter_key]
                 fused_delta = fused_delta + weight * adapter(hidden_states)
 
-            fused = hidden_states + fused_delta
+            fused = hidden_states + (self.fusion_scale * fused_delta)
             if suffix is not None:
                 return (fused,) + suffix
             return fused
@@ -229,6 +248,7 @@ class MultiEraserWrapper(nn.Module):
         weights = self.normalized_weights()
         return {
             'fusion_type': 'active_softmax',
+            'fusion_scale': self.fusion_scale,
             'erasers': [
                 {'path': path, 'weight': weight}
                 for path, weight in zip(self.eraser_paths, weights)
